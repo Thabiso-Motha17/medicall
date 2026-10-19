@@ -1,16 +1,37 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Search, Bell, Star, Clock, MapPin } from 'lucide-react-native';
 import { AppCard, Avatar, Badge } from '@/components/Atoms';
 import { AppInput } from '@/components/AppInput';
-import { DOCTORS, SPECIALTIES } from '@/lib/mockData';
+import { getVerifiedDoctors } from '../../lib/doctors';
+import { SPECIALTIES } from '../../lib/specialties';
 import { colors, radii, spacing, typography } from '@/theme/tokens';
+
+// Turns "General Practitioner" back into "general", etc.
+function doctorMatches(d: any, filter: string) {
+  if (filter === 'all') return true;
+  if ((d.specialties ?? []).includes(filter)) return true;
+  return (d.specialty ?? '').toLowerCase().includes(filter.toLowerCase());
+}
 
 export default function Home() {
   const [filter, setFilter] = useState('all');
+  const [doctors, setDoctors] = useState<any[]>([]);
   const router = useRouter();
+
+  useEffect(() => {
+    getVerifiedDoctors().then(setDoctors);
+  }, []);
+
+  const visible = doctors.filter((d) => doctorMatches(d, filter));
+
+  // Adds an "All" chip unless SPECIALTIES already has one; works with id or value fields
+  const allChips: any[] = (SPECIALTIES as any[]).some((s) => (s.value ?? s.id) === 'all')
+    ? (SPECIALTIES as any[])
+    : [{ value: 'all', id: 'all', label: 'All', icon: '🩺' }, ...(SPECIALTIES as any[])];
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: colors.background }} edges={['top']}>
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -46,12 +67,13 @@ export default function Home() {
 
         <SectionHeader title="Specialties" />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
-          {SPECIALTIES.map((s) => {
-            const active = filter === s.id;
+          {allChips.map((s) => {
+            const value = String(s.value ?? s.id);
+            const active = filter === value;
             return (
               <Pressable
-                key={s.id}
-                onPress={() => setFilter(s.id)}
+                key={value}
+                onPress={() => setFilter(value)}
                 style={[styles.chip, active && { backgroundColor: colors.primary, borderColor: colors.primary }]}
               >
                 <Text style={{ fontSize: 14 }}>{s.icon}</Text>
@@ -63,7 +85,7 @@ export default function Home() {
 
         <SectionHeader title="Available now" />
         <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md, paddingBottom: spacing.lg }}>
-          {DOCTORS.map((d) => (
+          {visible.map((d) => (
             <Pressable key={d.id} onPress={() => router.push(`/doctor/${d.id}`)}>
               <AppCard style={{ flexDirection: 'row', gap: spacing.base }}>
                 <Avatar name={d.name} size={64} />
