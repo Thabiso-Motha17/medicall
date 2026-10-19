@@ -1,0 +1,10 @@
+{
+  "projects": {
+    "default": "medicall-012",
+    "dev": "medicall-dev",
+    "staging": "medicall-staging",
+    "prod": "medicall-prod"
+  },
+  "targets": {},
+  "etags": {}
+}

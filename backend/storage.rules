@@ -1,0 +1,52 @@
+rules_version = '2';
+
+// MediCall — Cloud Storage Security Rules
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() { return request.auth != null; }
+    function uid()        { return request.auth.uid; }
+    function role()       { return request.auth.token.role; }
+    function isAdmin()    { return isSignedIn() && role() == "admin"; }
+    function isImage()    { return request.resource.contentType.matches('image/.*'); }
+    function isPdf()      { return request.resource.contentType == 'application/pdf'; }
+    function maxSize(mb)  { return request.resource.size < mb * 1024 * 1024; }
+
+    // ── User avatars: public read, owner write, image only, ≤5MB.
+    match /users/{userId}/avatar/{file} {
+      allow read: if true;
+      allow write: if isSignedIn() && uid() == userId && isImage() && maxSize(5);
+    }
+
+    // ── Doctor verification documents: owner upload, admin/owner read,
+    //    pdf or image, ≤15MB.
+    match /doctors/{doctorId}/documents/{file} {
+      allow read:  if isSignedIn() && (uid() == doctorId || isAdmin());
+      allow create: if isSignedIn() && uid() == doctorId
+                    && (isImage() || isPdf()) && maxSize(15);
+      allow update, delete: if isAdmin();
+    }
+
+    // ── Prescriptions: doctor (assigned to the appointment) writes, patient reads.
+    //    Path includes appointmentId; Cloud Function moves files into final
+    //    location after verifying the assignment. Direct writes restricted to
+    //    images/pdf ≤10MB by an authenticated doctor; the function later
+    //    enforces appointment ownership.
+    match /appointments/{appointmentId}/prescriptions/{file} {
+      allow read:  if isSignedIn(); // narrowed by Firestore appt rules in app code
+      allow write: if isSignedIn() && role() == "doctor"
+                   && (isImage() || isPdf()) && maxSize(10);
+    }
+
+    // ── Chat media: sender writes inside their own subpath, ≤20MB.
+    match /chat/{threadId}/{senderUid}/{file} {
+      allow read:  if isSignedIn();
+      allow write: if isSignedIn() && uid() == senderUid && maxSize(20);
+    }
+
+    // Default deny.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

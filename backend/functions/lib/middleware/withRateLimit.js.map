@@ -1,0 +1,1 @@
+{"version":3,"file":"withRateLimit.js","sourceRoot":"","sources":["../../src/middleware/withRateLimit.ts"],"names":[],"mappings":";;AAEA,sCAMC;AARD,oDAAmE;AAE5D,KAAK,UAAU,aAAa,CACjC,GAAW,EACX,MAAc,EACd,GAAoB;IAEpB,MAAM,IAAA,qBAAO,EAAC,GAAG,EAAE,MAAM,EAAE,GAAG,CAAC,CAAC;AAClC,CAAC"}

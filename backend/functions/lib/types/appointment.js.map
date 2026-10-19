@@ -1,0 +1,1 @@
+{"version":3,"file":"appointment.js","sourceRoot":"","sources":["../../src/types/appointment.ts"],"names":[],"mappings":";;;AA2EA,wDAAwD;AAC3C,QAAA,mBAAmB,GAAmD;IACjF,SAAS,EAAS,CAAC,UAAU,EAAE,WAAW,CAAC;IAC3C,QAAQ,EAAU,CAAC,iBAAiB,EAAE,WAAW,CAAC;IAClD,eAAe,EAAG,CAAC,aAAa,EAAE,WAAW,CAAC;IAC9C,WAAW,EAAO,CAAC,WAAW,EAAE,WAAW,CAAC;IAC5C,SAAS,EAAS,EAAE;IACpB,SAAS,EAAS,EAAE;CACrB,CAAC"}

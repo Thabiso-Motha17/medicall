@@ -1,0 +1,223 @@
+rules_version = '2';
+
+// MediCall — Firestore Security Rules
+// -----------------------------------------------------------------------------
+// Authorization is driven by **Firebase Auth custom claims**, not by data the
+// user can write. Sensitive state transitions are denied to clients entirely
+// and performed by Cloud Functions via the Admin SDK (which bypasses rules).
+// -----------------------------------------------------------------------------
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ────────── Helpers ──────────
+    function isSignedIn()      { return request.auth != null; }
+    function uid()             { return request.auth.uid; }
+    function role()            { return request.auth.token.role; }      // "patient" | "doctor" | "admin"
+    function isAdmin()         { return isSignedIn() && role() == "admin"; }
+    function isPatient()       { return isSignedIn() && role() == "patient"; }
+    function isDoctor()        { return isSignedIn() && role() == "doctor"; }
+    function isVerifiedDoctor(){ return isDoctor() && request.auth.token.verified == true; }
+    function isOwner(ownerId)  { return isSignedIn() && uid() == ownerId; }
+    function unchanged(field)  {
+      return resource.data[field] == request.resource.data[field];
+    }
+    function onlyChanged(allowedFields) {
+      return request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(allowedFields);
+    }
+
+    // ────────── users (public-ish profile shell) ──────────
+    match /users/{userId} {
+      // Anyone signed-in can read minimal profile (display name, photo).
+      allow read: if isSignedIn();
+
+      // Only Cloud Functions create user docs (onUserCreate trigger).
+      allow create: if false;
+
+      // Owner can update non-privileged fields. Role/disabled flag are
+      // server-controlled.
+      allow update: if isOwner(userId)
+                    && onlyChanged(['displayName','photoUrl','locale','updatedAt'])
+                    && unchanged('role')
+                    && unchanged('disabled');
+
+      allow delete: if isAdmin();
+
+      // ───── devices (FCM / Expo push tokens) ─────
+      match /devices/{deviceId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // ───── paymentMethods (Stripe pm_… ids only) ─────
+      match /paymentMethods/{pmId} {
+        allow read:   if isOwner(userId);
+        allow write:  if false;   // only set via Stripe webhook (admin SDK)
+      }
+    }
+
+    // ────────── doctorProfiles ──────────
+    match /doctorProfiles/{doctorId} {
+      // Public summary readable to any signed-in user (for browsing doctors).
+      // Sensitive fields (licenseNumber) are *also* in this doc; we mitigate
+      // by NEVER returning them in client list views and by only allowing
+      // admins to query by them. For HIPAA-grade isolation, split into
+      // doctorProfilesPublic + doctorProfilesPrivate.
+      allow read: if isSignedIn();
+
+      // Owner can edit their non-privileged profile fields. Verification
+      // status, ratings, geohash and location are server-managed.
+      allow update: if isOwner(doctorId)
+                    && onlyChanged([
+                         'specialties','bio','languages','experienceYears',
+                         'consultationFeeCents','currency',
+                         'isAcceptingRequests','updatedAt'
+                       ])
+                    && unchanged('verificationStatus')
+                    && unchanged('ratingAvg')
+                    && unchanged('ratingCount')
+                    && unchanged('geohash')
+                    && unchanged('lastLocation');
+
+      allow create, delete: if false; // only via Cloud Function
+
+      match /availability/{dayId} {
+        allow read:  if isSignedIn();
+        allow write: if isOwner(doctorId);
+      }
+
+      match /documents/{docId} {
+        allow read:   if isOwner(doctorId) || isAdmin();
+        allow create: if isOwner(doctorId);
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    // ────────── patientProfiles ──────────
+    match /patientProfiles/{patientId} {
+      allow read:   if isOwner(patientId) || isAdmin()
+                    // Assigned doctor of an active appointment can read.
+                    || (isVerifiedDoctor()
+                        && exists(/databases/$(database)/documents/appointments/$(request.auth.token.activeApptId))
+                        && get(/databases/$(database)/documents/appointments/$(request.auth.token.activeApptId)).data.patientId == patientId);
+      allow create: if false;
+      allow update: if isOwner(patientId)
+                    && onlyChanged(['medicalNotes','updatedAt']);
+      allow delete: if isAdmin();
+
+      match /addresses/{addressId} {
+        allow read, write: if isOwner(patientId);
+      }
+    }
+
+    // ────────── appointments ──────────
+    match /appointments/{appointmentId} {
+      // Read: patient on their own, assigned doctor, admins.
+      allow read: if isAdmin()
+                  || (isSignedIn() && resource.data.patientId == uid())
+                  || (isSignedIn() && resource.data.doctorId == uid());
+
+      // Create: only via callable. Clients cannot create directly because the
+      // matching algorithm, pricing snapshot, and version field must come
+      // from the server.
+      allow create: if false;
+
+      // Update: clients are forbidden from changing status, doctorId,
+      // pricing, or timestamps. Patients may only edit `notes` while the
+      // appointment is still in `requested`. Status transitions go through
+      // callables.
+      allow update: if isSignedIn()
+                    && resource.data.patientId == uid()
+                    && resource.data.status == "requested"
+                    && onlyChanged(['notes','updatedAt']);
+
+      allow delete: if false;
+
+      // Status events are append-only audit log written by functions only.
+      match /statusEvents/{eventId} {
+        allow read: if isAdmin()
+                    || get(/databases/$(database)/documents/appointments/$(appointmentId)).data.patientId == uid()
+                    || get(/databases/$(database)/documents/appointments/$(appointmentId)).data.doctorId == uid();
+        allow write: if false;
+      }
+
+      // Location pings: assigned doctor writes (cheap), patient reads.
+      match /locationPings/{ts} {
+        allow read: if isSignedIn()
+                    && (get(/databases/$(database)/documents/appointments/$(appointmentId)).data.patientId == uid()
+                        || get(/databases/$(database)/documents/appointments/$(appointmentId)).data.doctorId == uid());
+        // Even doctor writes go through callable to enforce throttling.
+        allow write: if false;
+      }
+    }
+
+    // ────────── chatThreads ──────────
+    match /chatThreads/{threadId} {
+      function isParticipant() {
+        return isSignedIn() && uid() in resource.data.participantIds;
+      }
+      allow read:   if isParticipant() || isAdmin();
+      allow create: if false; // created server-side when appointment accepted
+      allow update: if false; // denormalized fields updated by trigger only
+
+      match /messages/{messageId} {
+        allow read: if isSignedIn()
+                    && uid() in get(/databases/$(database)/documents/chatThreads/$(threadId)).data.participantIds;
+
+        // Sender can create their own message; size + type guarded.
+        allow create: if isSignedIn()
+                      && uid() in get(/databases/$(database)/documents/chatThreads/$(threadId)).data.participantIds
+                      && request.resource.data.senderId == uid()
+                      && request.resource.data.text is string
+                      && request.resource.data.text.size() <= 4000
+                      && request.resource.data.createdAt == request.time;
+
+        allow update, delete: if false; // immutable
+      }
+
+      match /participants/{participantId} {
+        // Only the participant can update their own unread / lastReadAt.
+        allow read:  if isOwner(participantId)
+                     || uid() in get(/databases/$(database)/documents/chatThreads/$(threadId)).data.participantIds;
+        allow write: if isOwner(participantId)
+                     && onlyChanged(['lastReadAt','unreadCount']);
+      }
+    }
+
+    // ────────── payments / invoices ──────────
+    match /payments/{paymentId} {
+      allow read:  if isAdmin()
+                   || resource.data.patientId == uid()
+                   || resource.data.doctorId == uid();
+      allow write: if false; // server-only (Stripe webhook)
+    }
+    match /invoices/{invoiceId} {
+      allow read:  if isAdmin() || resource.data.patientId == uid();
+      allow write: if false;
+    }
+
+    // ────────── notifications feed ──────────
+    match /notifications/{userId}/items/{itemId} {
+      allow read:   if isOwner(userId);
+      // Only mark-as-read field is client-writable.
+      allow update: if isOwner(userId)
+                    && onlyChanged(['readAt']);
+      allow create, delete: if false;
+    }
+
+    // ────────── audit logs / admin metadata ──────────
+    match /auditLogs/{logId} {
+      allow read:  if isAdmin();
+      allow write: if false; // append-only via admin SDK
+    }
+    match /adminMetadata/{docId} {
+      allow read:  if isAdmin();
+      allow write: if false;
+    }
+
+    // Default deny — explicit collection rules above are the only allowances.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
